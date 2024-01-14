@@ -169,12 +169,6 @@ namespace osu.Game.Updater
                 Text = @"Downloading update...";
             }
 
-            public void StartInstall()
-            {
-                Progress = 0;
-                Text = @"Installing update...";
-            }
-
             public void FailDownload()
             {
                 State = ProgressNotificationState.Cancelled;

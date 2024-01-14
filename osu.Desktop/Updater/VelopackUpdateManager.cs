@@ -2,7 +2,6 @@
 // See the LICENCE file in the repository root for full licence text.
 
 using System;
-using System.Runtime.Versioning;
 using System.Threading.Tasks;
 using osu.Framework.Allocation;
 using osu.Framework.Logging;
@@ -10,29 +9,18 @@ using osu.Game;
 using osu.Game.Overlays;
 using osu.Game.Overlays.Notifications;
 using osu.Game.Screens.Play;
-using Squirrel.SimpleSplat;
-using Squirrel.Sources;
-using LogLevel = Squirrel.SimpleSplat.LogLevel;
-using UpdateManager = osu.Game.Updater.UpdateManager;
+using Velopack;
+using Velopack.Sources;
+using OsuUpdateManager = osu.Game.Updater.UpdateManager;
 
 namespace osu.Desktop.Updater
 {
-    [SupportedOSPlatform("windows")]
-    public partial class SquirrelUpdateManager : UpdateManager
+    public partial class VelopackUpdateManager : OsuUpdateManager
     {
-        private Squirrel.UpdateManager? updateManager;
+        private UpdateManager updateManager;
         private INotificationOverlay notificationOverlay = null!;
 
-        public Task PrepareUpdateAsync() => Squirrel.UpdateManager.RestartAppWhenExited();
-
         private static readonly Logger logger = Logger.GetLogger("updater");
-
-        /// <summary>
-        /// Whether an update has been downloaded but not yet applied.
-        /// </summary>
-        private bool updatePending;
-
-        private readonly SquirrelLogger squirrelLogger = new SquirrelLogger();
 
         [Resolved]
         private OsuGameBase game { get; set; } = null!;
@@ -40,22 +28,28 @@ namespace osu.Desktop.Updater
         [Resolved]
         private ILocalUserPlayInfo? localUserInfo { get; set; }
 
+        public VelopackUpdateManager()
+        {
+            const string? github_token = null; // TODO: populate.
+            var log = new VelopackLogger();
+            var source = new GithubSource("https://github.com/ppy/osu", github_token!, false, new HttpClientFileDownloader());
+            // you can uncomment the below and pass to UpdateManager to test updates when running locally / debugging.
+            // var locator = new TestVelopackLocator("osulazer", "1.0.0", @"C:\Source\osu-deploy\bin\Debug\net6.0\packages", logger);
+            updateManager = new UpdateManager(source, logger: log);
+        }
+
         [BackgroundDependencyLoader]
         private void load(INotificationOverlay notifications)
         {
             notificationOverlay = notifications;
-
-            SquirrelLocator.CurrentMutable.Register(() => squirrelLogger, typeof(ILogger));
         }
 
         protected override async Task<bool> PerformUpdateCheck() => await checkForUpdateAsync().ConfigureAwait(false);
 
-        private async Task<bool> checkForUpdateAsync(bool useDeltaPatching = true, UpdateProgressNotification? notification = null)
+        private async Task<bool> checkForUpdateAsync(UpdateProgressNotification? notification = null)
         {
             // should we schedule a retry on completion of this check?
             bool scheduleRecheck = true;
-
-            const string? github_token = null; // TODO: populate.
 
             try
             {
@@ -63,13 +57,11 @@ namespace osu.Desktop.Updater
                 if (localUserInfo?.IsPlaying.Value == true)
                     return false;
 
-                updateManager ??= new Squirrel.UpdateManager(new GithubSource(@"https://github.com/ppy/osu", github_token, false), @"osulazer");
+                var info = await updateManager.CheckForUpdatesAsync().ConfigureAwait(false);
 
-                var info = await updateManager.CheckForUpdate(!useDeltaPatching).ConfigureAwait(false);
-
-                if (info.ReleasesToApply.Count == 0)
+                if (info == null)
                 {
-                    if (updatePending)
+                    if (updateManager.IsUpdatePendingRestart)
                     {
                         // the user may have dismissed the completion notice, so show it again.
                         notificationOverlay.Post(new UpdateApplicationCompleteNotification
@@ -103,37 +95,22 @@ namespace osu.Desktop.Updater
 
                 try
                 {
-                    await updateManager.DownloadReleases(info.ReleasesToApply, p => notification.Progress = p / 100f).ConfigureAwait(false);
-
-                    notification.StartInstall();
-
-                    await updateManager.ApplyReleases(info, p => notification.Progress = p / 100f).ConfigureAwait(false);
-
+                    await updateManager.DownloadUpdatesAsync(info, p => notification.Progress = p / 100f).ConfigureAwait(false);
                     notification.State = ProgressNotificationState.Completed;
-                    updatePending = true;
                 }
                 catch (Exception e)
                 {
-                    if (useDeltaPatching)
-                    {
-                        logger.Add(@"delta patching failed; will attempt full download!");
 
-                        // could fail if deltas are unavailable for full update path (https://github.com/Squirrel/Squirrel.Windows/issues/959)
-                        // try again without deltas.
-                        await checkForUpdateAsync(false, notification).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        // In the case of an error, a separate notification will be displayed.
-                        notification.FailDownload();
-                        Logger.Error(e, @"update failed!");
-                    }
+                    // In the case of an error, a separate notification will be displayed.
+                    notification.FailDownload();
+                    Logger.Error(e, @"update download failed!");
                 }
             }
-            catch (Exception)
+            catch (Exception e)
             {
                 // we'll ignore this and retry later. can be triggered by no internet connection or thread abortion.
                 scheduleRecheck = true;
+                Logger.Error(e, @"update check failed!");
             }
             finally
             {
@@ -149,31 +126,24 @@ namespace osu.Desktop.Updater
 
         private bool restartToApplyUpdate()
         {
-            PrepareUpdateAsync()
-                .ContinueWith(_ => Schedule(() => game.AttemptExit()));
+            updateManager.WaitExitThenApplyUpdate(true);
+            Schedule(() => game.AttemptExit());
             return true;
         }
 
-        protected override void Dispose(bool isDisposing)
+        private class VelopackLogger : Microsoft.Extensions.Logging.ILogger
         {
-            base.Dispose(isDisposing);
-            updateManager?.Dispose();
-        }
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
-        private class SquirrelLogger : ILogger, IDisposable
-        {
-            public LogLevel Level { get; set; } = LogLevel.Info;
+            public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
 
-            public void Write(string message, LogLevel logLevel)
+            public void Log<TState>(Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
             {
-                if (logLevel < Level)
-                    return;
-
-                logger.Add(message);
-            }
-
-            public void Dispose()
-            {
+                if (logLevel >= Microsoft.Extensions.Logging.LogLevel.Information)
+                {
+                    string message = formatter(state, exception);
+                    logger.Add(message);
+                }
             }
         }
     }

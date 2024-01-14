@@ -100,9 +100,9 @@ namespace osu.Desktop
             switch (RuntimeInfo.OS)
             {
                 case RuntimeInfo.Platform.Windows:
-                    Debug.Assert(OperatingSystem.IsWindows());
-
-                    return new SquirrelUpdateManager();
+                case RuntimeInfo.Platform.Linux:
+                case RuntimeInfo.Platform.macOS:
+                    return new VelopackUpdateManager();
 
                 default:
                     return new SimpleUpdateManager();
@@ -114,14 +114,9 @@ namespace osu.Desktop
             switch (RuntimeInfo.OS)
             {
                 case RuntimeInfo.Platform.Windows:
-                    Debug.Assert(OperatingSystem.IsWindows());
-
-                    // Of note, this is an async method in squirrel that adds an arbitrary delay before returning
-                    // likely to ensure the external process is in a good state.
-                    //
-                    // We're not waiting on that here, but the outro playing before the actual exit should be enough
-                    // to cover this.
-                    Squirrel.UpdateManager.RestartAppWhenExited().FireAndForget();
+                case RuntimeInfo.Platform.Linux:
+                case RuntimeInfo.Platform.macOS:
+                    Velopack.UpdateExe.Apply(Velopack.Locators.VelopackLocator.GetDefault(null!), true, true, null);
                     return true;
             }
 

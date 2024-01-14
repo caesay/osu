@@ -1,9 +1,8 @@
-﻿// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
+// Copyright (c) ppy Pty Ltd <contact@ppy.sh>. Licensed under the MIT Licence.
 // See the LICENCE file in the repository root for full licence text.
 
 using System;
 using System.IO;
-using System.Runtime.Versioning;
 using osu.Desktop.LegacyIpc;
 using osu.Framework;
 using osu.Framework.Development;
@@ -13,7 +12,7 @@ using osu.Game;
 using osu.Game.IPC;
 using osu.Game.Tournament;
 using SDL2;
-using Squirrel;
+using Velopack;
 
 namespace osu.Desktop
 {
@@ -30,19 +29,10 @@ namespace osu.Desktop
         [STAThread]
         public static void Main(string[] args)
         {
-            /*
-             * WARNING: DO NOT PLACE **ANY** CODE ABOVE THE FOLLOWING BLOCK!
-             *
-             * Logic handling Squirrel MUST run before EVERYTHING if you do not want to break it.
-             * To be more precise: Squirrel is internally using a rather... crude method to determine whether it is running under NUnit,
-             * namely by checking loaded assemblies:
-             * https://github.com/clowd/Clowd.Squirrel/blob/24427217482deeeb9f2cacac555525edfc7bd9ac/src/Squirrel/SimpleSplat/PlatformModeDetector.cs#L17-L32
-             *
-             * If it finds ANY assembly from the ones listed above - REGARDLESS of the reason why it is loaded -
-             * the app will then do completely broken things like:
-             * - not creating system shortcuts (as the logic is if'd out if "running tests")
-             * - not exiting after the install / first-update / uninstall hooks are ran (as the `Environment.Exit()` calls are if'd out if "running tests")
-             */
+            // Velopack needs to be the fisrt thing to run, as it may need to exit or restart the app.
+            VelopackApp.Build().Run();
+
+            // run Squirrel first, as the app may exit after these run
             if (OperatingSystem.IsWindows())
             {
                 var windowsVersion = Environment.OSVersion.Version;
@@ -62,8 +52,6 @@ namespace osu.Desktop
                         + "If you are running a newer version of windows, please check you don't have \"Compatibility mode\" turned on for osu!", IntPtr.Zero);
                     return;
                 }
-
-                setupSquirrel();
             }
 
             // NVIDIA profiles are based on the executable name of a process.
@@ -164,31 +152,6 @@ namespace osu.Desktop
             }
 
             return false;
-        }
-
-        [SupportedOSPlatform("windows")]
-        private static void setupSquirrel()
-        {
-            SquirrelAwareApp.HandleEvents(onInitialInstall: (_, tools) =>
-            {
-                tools.CreateShortcutForThisExe();
-                tools.CreateUninstallerRegistryEntry();
-            }, onAppUpdate: (_, tools) =>
-            {
-                tools.CreateUninstallerRegistryEntry();
-            }, onAppUninstall: (_, tools) =>
-            {
-                tools.RemoveShortcutForThisExe();
-                tools.RemoveUninstallerRegistryEntry();
-            }, onEveryRun: (_, _, _) =>
-            {
-                // While setting the `ProcessAppUserModelId` fixes duplicate icons/shortcuts on the taskbar, it currently
-                // causes the right-click context menu to function incorrectly.
-                //
-                // This may turn out to be non-required after an alternative solution is implemented.
-                // see https://github.com/clowd/Clowd.Squirrel/issues/24
-                // tools.SetProcessAppUserModelId();
-            });
         }
     }
 }
